@@ -4,6 +4,7 @@ export class MidiLoader {
     constructor() {
         this.midiData = null;
         this.rawMidiBuffer = null;
+        this.cachedNotes = null;
     }
     
     async loadMidi(file, timeOffset = 5) {
@@ -33,12 +34,17 @@ export class MidiLoader {
                 });
             });
         }
+        this.cachedNotes = null;
         return true;
     }
     
     getAllNotes(activeTrackIndices) {
         if (!this.midiData) return [];
         
+        if (activeTrackIndices === undefined && this.cachedNotes) {
+            return this.cachedNotes;
+        }
+
         const allNotes = [];
         this.midiData.tracks.forEach((track, index) => {
              if (activeTrackIndices === undefined || activeTrackIndices.has(index)) {
@@ -54,7 +60,13 @@ export class MidiLoader {
             }
         });
         
-        return allNotes.sort((a, b) => a.time - b.time);
+        const sorted = allNotes.sort((a, b) => a.time - b.time);
+        
+        if (activeTrackIndices === undefined) {
+            this.cachedNotes = sorted;
+        }
+
+        return sorted;
     }
     
     getDuration() {

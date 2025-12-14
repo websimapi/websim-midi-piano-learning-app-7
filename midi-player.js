@@ -17,6 +17,7 @@ export class MidiPlayer {
         this.lastScheduleTime = 0;
         this.pausedTime = null;
         this.activeTrackIndices = new Set();
+        this.scheduleNoteIndex = 0;
 
         this.midiLoader = new MidiLoader();
         this.canvasManager = new CanvasManager();
@@ -70,6 +71,7 @@ export class MidiPlayer {
         this.fallingNotesRenderer.reset();
         this.activeNotesByFallingNote.clear();
         this.lastScheduleTime = 0;
+        this.scheduleNoteIndex = 0;
 
         // Reset play button state to 'Play' as playback has been stopped/reset
         const playBtn = document.getElementById('play-btn');
@@ -110,6 +112,7 @@ export class MidiPlayer {
             this.fallingNotesRenderer.reset();
             this.activeNotesByFallingNote.clear();
             this.lastScheduleTime = 0;
+            this.scheduleNoteIndex = 0;
             this.scheduleInitialNotes();
             this.animate();
         }
@@ -142,6 +145,7 @@ export class MidiPlayer {
         this.currentTime = 0;
         this.fallingNotesRenderer.reset();
         this.activeNotesByFallingNote.clear();
+        this.scheduleNoteIndex = 0;
 
         if (this.animationId) {
             cancelAnimationFrame(this.animationId);
@@ -179,26 +183,45 @@ export class MidiPlayer {
     }
 
     scheduleInitialNotes() {
-        const allNotes = this.midiLoader.getAllNotes(undefined); // Get all notes regardless of active tracks
-
-        allNotes.forEach(note => {
-            if (note.time <= this.fallingNotesRenderer.fallTime) {
-                const isHidden = !this.activeTrackIndices.has(note.track);
-                this.fallingNotesRenderer.createFallingNote(note, isHidden);
-                this.fallingNotesRenderer.scheduledNotes.add(`${note.name}-${note.time}`);
-            }
-        });
+        this.scheduleNotes();
     }
 
     scheduleNotes() {
-        if (this.currentTime - this.lastScheduleTime < 0.1) return;
+        // Run more frequently but do less work per run (30Hz target to match prompt)
+        if (this.currentTime - this.lastScheduleTime < 0.03) return; 
         this.lastScheduleTime = this.currentTime;
 
-        const allNotes = this.midiLoader.getAllNotes(undefined); // Get all notes to schedule them all
-        allNotes.forEach(note => {
+        const allNotes = this.midiLoader.getAllNotes(undefined);
+        if (!allNotes || allNotes.length === 0) return;
+
+        // Advance index if notes are too old (optimization for long pauses or skips)
+        // Keep a buffer for past notes that might still be rendering/playing
+        while (this.scheduleNoteIndex < allNotes.length) {
+            const note = allNotes[this.scheduleNoteIndex];
+            // If note ended more than 5 seconds ago, we definitely don't need to schedule it
+            if (note.time + note.duration < this.currentTime - 5) {
+                this.scheduleNoteIndex++;
+            } else {
+                break;
+            }
+        }
+
+        // Schedule upcoming notes using the cursor
+        let lookaheadIndex = this.scheduleNoteIndex;
+        while (lookaheadIndex < allNotes.length) {
+            const note = allNotes[lookaheadIndex];
+            const timeTillNote = note.time - this.currentTime;
+
+            // Stop if we are looking too far into the future
+            if (timeTillNote > this.fallingNotesRenderer.fallTime) {
+                break;
+            }
+
             const isHidden = !this.activeTrackIndices.has(note.track);
             this.fallingNotesRenderer.scheduleNote(note, this.currentTime, isHidden);
-        });
+            
+            lookaheadIndex++;
+        }
     }
 
     animate() {
@@ -325,11 +348,13 @@ export class MidiPlayer {
         this.keyHitAnimator.pauseCSSHitAnimations();
         this.fallingNotesRenderer.reset();
         this.lastScheduleTime = -100; // Reset so scheduling happens immediately
+        this.scheduleNoteIndex = 0; // Reset cursor logic
         
         // Update time state
         if (this.isPlaying) {
             this.startTime = performance.now() - (time * 1000);
             this.currentTime = time;
+            this.scheduleNotes();
         } else {
             this.pausedTime = time;
             this.currentTime = time;
@@ -339,12 +364,8 @@ export class MidiPlayer {
             // Render a static frame so user sees notes at new position
             this.canvasManager.clear();
             
-            // We need to temporarily schedule notes around this time to draw them
-            const allNotes = this.midiLoader.getAllNotes(undefined);
-            allNotes.forEach(note => {
-                const isHidden = !this.activeTrackIndices.has(note.track);
-                this.fallingNotesRenderer.scheduleNote(note, this.currentTime, isHidden);
-            });
+            // Force a schedule pass
+            this.scheduleNotes();
             
             // Draw them without triggering audio or playing logic
             // We manually manipulate fallingNotes just for drawing
